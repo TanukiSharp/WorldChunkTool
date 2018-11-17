@@ -69,6 +69,8 @@
     <Compile Include="PKG.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="SubStream.cs" />
+    <Compile Include="UtilsEx.cs" />
     <Compile Include="Utils.cs" />
   </ItemGroup>
   <ItemGroup>

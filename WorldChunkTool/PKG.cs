@@ -6,11 +6,15 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace WorldChunkTool
 {
     class PKG
     {
+        private static readonly byte[] NameBuffer = new byte[160];
+        private static readonly SubStream subStream = new SubStream();
+
         public static void ExtractPKG(string FileInput, bool FlagPKGExtraction)
         {
             string OutputDirectory = $"{Environment.CurrentDirectory}\\{Path.GetFileNameWithoutExtension(FileInput)}";
@@ -27,7 +31,8 @@ namespace WorldChunkTool
             Reader.BaseStream.Seek(0x100, SeekOrigin.Begin);
             for (int i = 0; i < TotalParentCount; i++)
             {
-                byte[] ArrayNameParent = Reader.ReadBytes(0x3C).Where(b => b != 0x00).ToArray();
+                Reader.BaseStream.Seek(0x3C, SeekOrigin.Current);
+
                 string StringNameParent;
                 long FileSize = Reader.ReadInt64();
                 long FileOffset = Reader.ReadInt64();
@@ -38,34 +43,29 @@ namespace WorldChunkTool
                 {
                     Console.Write($"\rParent entry {(i + 1).ToString().PadLeft(ParentPadding)}/{TotalParentCount}. Processing child entry {(j + 1).ToString().PadLeft(4)} / {CountChildren.ToString().PadLeft(4)}...");
 
-                    long ReaderPositionSubFile = Reader.BaseStream.Position;
-                    byte[] ArrayNameChild = Reader.ReadBytes(0xA0).Where(b => b != 0x00).ToArray();
+                    Reader.Read(NameBuffer, 0, NameBuffer.Length);
                     FileSize = Reader.ReadInt64();
                     FileOffset = Reader.ReadInt64();
                     EntryType = Reader.ReadInt32();
                     int Unknown = Reader.ReadInt32();
 
-                    // Proper up remapped files
-                    if (EntryType == 0x02)
-                    {
-                        Reader.BaseStream.Seek(ReaderPositionSubFile, SeekOrigin.Begin);
-                        ArrayNameChild = Reader.ReadBytes(0x50).Where(b => b != 0x00).ToArray();
-                        Reader.BaseStream.Seek(0x68, SeekOrigin.Current);
-                    }
-                    StringNameParent = Encoding.UTF8.GetString(ArrayNameChild);
+                    int trailingZeroIndex = Array.IndexOf<byte>(NameBuffer, 0);
+                    StringNameParent = Encoding.UTF8.GetString(NameBuffer, 0, trailingZeroIndex);
 
                     // Extract remapped and regular files
-                    if (EntryType == 0x02 || EntryType == 0x00)
+                    if (FlagPKGExtraction && (EntryType == 0x02 || EntryType == 0x00))
                     {
-                        long ReaderPositionBeforeEntry = Reader.BaseStream.Position;
-                        Reader.BaseStream.Seek(FileOffset, SeekOrigin.Begin);
-                        byte[] ArrayFileData = Reader.ReadBytes(Convert.ToInt32(FileSize));
+                        string filename = Path.Combine(OutputDirectory, StringNameParent.TrimStart('\\'));
+                        string directory = Path.GetDirectoryName(filename);
+                        if (Directory.Exists(directory) == false)
+                            Directory.CreateDirectory(directory);
 
-                        if (FlagPKGExtraction)
-                        {
-                            new FileInfo($"{OutputDirectory}\\{StringNameParent}").Directory.Create();
-                            File.WriteAllBytes($"{OutputDirectory}\\{StringNameParent}", ArrayFileData);
-                        }
+                        long ReaderPositionBeforeEntry = Reader.BaseStream.Position;
+
+                        subStream.UpdateWorkingSet(Reader.BaseStream, FileOffset, FileSize);
+                        using (var fs = new FileStream(filename, FileMode.Create, FileAccess.Write))
+                            CopyStreams(subStream, fs);
+
                         Reader.BaseStream.Seek(ReaderPositionBeforeEntry, SeekOrigin.Begin);
                     }
 
@@ -91,6 +91,38 @@ namespace WorldChunkTool
             Utils.Print("Finished.", true);
             Utils.Print($"Output at: {OutputDirectory}", false);
             Console.WriteLine("Press Enter to quit");
+        }
+
+        private static readonly byte[][] transferBuffer = new byte[][]
+        {
+            new byte[256 * 1024],
+            new byte[256 * 1024],
+        };
+
+        private static void CopyStreams(Stream input, Stream output)
+        {
+            CopyStreamsAsync(input, output).GetAwaiter().GetResult();
+        }
+
+        private static async Task CopyStreamsAsync(Stream input, Stream output)
+        {
+            int indexA = 0;
+            int indexB = 1;
+
+            int bytesRead = await input.ReadAsync(transferBuffer[indexA], 0, transferBuffer[indexA].Length);
+
+            while (bytesRead > 0)
+            {
+                Task writeTask = output.WriteAsync(transferBuffer[indexA], 0, bytesRead);
+                Task<int> readTask = input.ReadAsync(transferBuffer[indexB], 0, transferBuffer[indexB].Length);
+
+                await Task.WhenAll(writeTask, readTask);
+
+                bytesRead = await readTask;
+
+                indexA = (indexA + 1) & 1;
+                indexB = (indexB + 1) & 1;
+            }
         }
     }
 }

@@ -6,6 +6,11 @@ namespace WorldChunkTool
 {
     class Chunk
     {
+        private static readonly byte[] eightBytesBuffer = new byte[8];
+        private static byte[] dataBuffer = new byte[5 * 1024 * 1024];
+
+        private static readonly UtilsEx utils = new UtilsEx(0x40000);
+
         public static void DecompressChunks(String FileInput, bool FlagPKGExtraction)
         {
             string NamePKG = $"{Environment.CurrentDirectory}\\{Path.GetFileNameWithoutExtension(FileInput)}.pkg";
@@ -22,20 +27,20 @@ namespace WorldChunkTool
             // Read file list
             for (int i = 0; i < ChunkCount; i++)
             {
-                // Process file size
-                byte[] ArrayTmp1 = new byte[8];
-                byte[] ArrayChunkSize = Reader.ReadBytes(3);
-                //int Low = ArrayChunkSize[0] & 0x0F;
-                int High = ArrayChunkSize[0] >> 4;
-                ArrayChunkSize[0] = BitConverter.GetBytes(High)[0];
-                Array.Copy(ArrayChunkSize, ArrayTmp1, ArrayChunkSize.Length);
-                long ChunkSize = BitConverter.ToInt64(ArrayTmp1, 0);
+                Reader.Read(eightBytesBuffer, 0, eightBytesBuffer.Length);
+                eightBytesBuffer[0] >>= 4;
 
-                // Process offset
-                byte[] ArrayTmp2 = new byte[8];
-                byte[] ArrayChunkOffset = Reader.ReadBytes(5);
-                Array.Copy(ArrayChunkOffset, ArrayTmp2, ArrayChunkOffset.Length);
-                long ChunkOffset = BitConverter.ToInt64(ArrayTmp2, 0);
+                long ChunkSize =
+                    eightBytesBuffer[2] << 16 |
+                    eightBytesBuffer[1] << 8 |
+                    eightBytesBuffer[0];
+
+                long ChunkOffset =
+                    (long)eightBytesBuffer[7] << 32 |
+                    (long)eightBytesBuffer[6] << 24 |
+                    (long)eightBytesBuffer[5] << 16 |
+                    (long)eightBytesBuffer[4] << 8 |
+                    eightBytesBuffer[3];
 
                 MetaChunk.Add(ChunkOffset, ChunkSize);
             }
@@ -47,23 +52,32 @@ namespace WorldChunkTool
             foreach (KeyValuePair<long, long> Entry in MetaChunk)
             {
                 Console.Write($"\rProcessing {DictCount.ToString().PadLeft(ChunkPadding)} / {ChunkCount}...");
+                Reader.BaseStream.Seek(Entry.Key, SeekOrigin.Begin);
+
                 if (Entry.Value != 0)
                 {
-                    Reader.BaseStream.Seek(Entry.Key, SeekOrigin.Begin);
-                    byte[] ChunkCompressed = Reader.ReadBytes((int)Entry.Value); // Unsafe cast
-                    byte[] ChunkDecompressed = Utils.Decompress(ChunkCompressed, ChunkCompressed.Length, 0x40000);
-                    Writer.Write(ChunkDecompressed);
+                    int inputSize = (int)Entry.Value;
+
+                    byte[] buffer = GetDataBuffer(inputSize);
+                    int bytesRead = Reader.Read(buffer, 0, inputSize);
+
+                    ArraySegment<byte> chunkDecompressed = utils.Decompress(buffer, bytesRead);
+                    Writer.Write(chunkDecompressed.Array, chunkDecompressed.Offset, chunkDecompressed.Count);
                 }
                 else
                 {
-                    Reader.BaseStream.Seek(Entry.Key, SeekOrigin.Begin);
-                    byte[] ChunkDecompressed = Reader.ReadBytes(0x40000);
-                    Writer.Write(ChunkDecompressed);
+                    const int inputSize = 0x40000;
+
+                    byte[] buffer = GetDataBuffer(inputSize);
+                    int bytesRead = Reader.Read(buffer, 0, inputSize);
+
+                    Writer.Write(buffer, 0, bytesRead);
                 }
+
                 DictCount++;
             }
-            Reader.Close();
-            Writer.Close();
+            Reader.Dispose();
+            Writer.Dispose();
 
             Utils.Print("Finished.", true);
             Utils.Print($"Output at: {NamePKG}", false);
@@ -74,6 +88,13 @@ namespace WorldChunkTool
             Console.WriteLine("==============================");
             PKG.ExtractPKG(NamePKG, FlagPKGExtraction);
             Console.Read();
+        }
+
+        private static byte[] GetDataBuffer(int minimumSize)
+        {
+            if (minimumSize > dataBuffer.Length)
+                dataBuffer = new byte[minimumSize];
+            return dataBuffer;
         }
     }
 }
